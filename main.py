@@ -12,7 +12,6 @@ from process.config import get_excel_mapping, load_excel_mapping
 from process.nexus_service import NexusService
 
 nexus: NexusClientManager
-nexus_database_client: NexusDatabaseClient
 nexus_service: NexusService
 tracker: Tracker
 
