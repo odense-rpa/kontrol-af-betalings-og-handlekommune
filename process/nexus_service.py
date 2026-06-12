@@ -16,6 +16,34 @@ class NexusService:
         self.nexus_database = nexus_database
         self.tracker = tracker
 
+    def _parse_nexus_date(self, date_value: str | None) -> datetime | None:
+        if not date_value:
+            return None
+
+        return datetime.strptime(date_value, "%Y-%m-%d")
+
+    def _hent_primær_organisationsrelation(self, borger: dict) -> dict | None:
+        organisationer = self.nexus.organisationer.hent_organisationer_for_borger(
+            borger,
+            kun_aktive=False,
+        )
+
+        aktive_organisationer = [
+            organisation
+            for organisation in organisationer
+            if (
+                (effective_end_date := self._parse_nexus_date(organisation.get("effectiveEndDate"))) is None
+                or effective_end_date > datetime.now()
+            )
+        ]
+
+        aktive_organisationer.sort(
+            key=lambda organisation: self._parse_nexus_date(organisation.get("effectiveStartDate")) or datetime.min,
+            reverse=True,
+        )
+
+        return aktive_organisationer[0] if aktive_organisationer else None
+
     def _hent_medarbejder(self, borger: dict) -> dict | None:
         pathway = self.nexus.borgere.hent_visning(borger=borger)
 
@@ -89,6 +117,10 @@ class NexusService:
 
 
     def opret_opgave_og_rapporter(self, borger: dict, fejl_type: str):
+        cpr = (borger.get("patientIdentifier") or {}).get("identifier")
+        organisation = self._hent_primær_organisationsrelation(borger)
+        
+
         medarbejder = self._hent_medarbejder(borger)
 
         if medarbejder is None:
@@ -96,8 +128,9 @@ class NexusService:
                 report_id="kontrol_af_betalings_og_handlekommune",
                 group="Borgere",
                 json={
-                    "Cpr": borger.get("patientIdentifier").get("identifier"),
-                    "Handling": "Borger har mangler i stamdata, men ingen ansvarlig sagsbehandler at lægge opgave til."                    
+                    "Cpr": cpr,                    
+                    "Handling": "Borger har mangler i stamdata, men ingen ansvarlig sagsbehandler at lægge opgave til.",
+                    "Organisation": organisation.get("organization", {}).get("name", "") if organisation else ""
                 }
             )
             self.tracker.track_partial_task(process_name=proces_navn)
@@ -110,16 +143,17 @@ class NexusService:
                 report_id="kontrol_af_betalings_og_handlekommune",
                 group="Borgere",
                 json={
-                    "Cpr": borger.get("patientIdentifier").get("identifier"),
-                    "Handling": "Borger har ingen indsatser at oprette opgave på."
+                    "Cpr": cpr,                    
+                    "Handling": "Borger har ingen indsatser at oprette opgave på.",
+                    "Organisation": organisation.get("organization", {}).get("name", "") if organisation else ""
                 }
             )
             self.tracker.track_partial_task(process_name=proces_navn)
             return
         
-        opgaver = self.nexus.opgaver.hent_opgave_historik(objekt=indsats)
+        opgaver = self.nexus.opgaver.hent_opgave_historik(objekt=indsats) or []
 
-        if opgaver is None or len(opgaver) > 0:
+        if len(opgaver) > 0:
             for opgave in opgaver:
             # Opgave er oprettet i forvejen på element
                 if opgave.get("opgaveType", "") == "Angiv handle- og betalekommune":
@@ -139,8 +173,10 @@ class NexusService:
                 report_id="kontrol_af_betalings_og_handlekommune",
                 group="Borgere",
                 json={
-                    "Cpr": borger.get("patientIdentifier").get("identifier"),
-                    "Handling": fejl_type
+                    "Cpr": cpr,                    
+                    "Handling": fejl_type,
+                    "Organisation": organisation.get("organization", {}).get("name", "") if organisation else ""
+
                 }
         )
         self.tracker.track_task(process_name=proces_navn)
